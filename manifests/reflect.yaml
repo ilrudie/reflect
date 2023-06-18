@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: reflect
+  labels:
+    app: reflect
+    service: reflect
+spec:
+  ipFamilyPolicy: RequireDualStack
+  ipFamilies:
+  - IPv6
+  - IPv4
+  ports:
+  - port: 8080
+    name: http
+  selector:
+    app: reflect
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reflect
+  labels:
+    app: reflect
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reflect
+  template:
+    metadata:
+      labels:
+        app: reflect
+    spec:
+      containers:
+      - name: reflect
+        image: docker.io/ilrudie/reflect
+        resources:
+          requests:
+            cpu: "100m"
+        imagePullPolicy: IfNotPresent #Always
+        ports:
+        - containerPort: 8080
