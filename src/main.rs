@@ -200,7 +200,16 @@ where
     A: tokio::net::ToSocketAddrs,
 {
     // let exporter = init_prom_exporter();
-    let l = TcpListener::bind(addr).await.unwrap();
+    let l = match TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            error!("admin server failed to bind with error: {}", e);
+            return; // bail out early with no admin server
+        }
+    };
+
+    info!("admin server started");
+
     loop {
         let (stream, _) = l.accept().await.unwrap();
         // let metrics = exporter.registry().gather();
@@ -258,7 +267,7 @@ async fn main() {
     let tasks = vec![
         tokio::spawn(listen_and_serve("0.0.0.0:8080", "IPv4")),
         tokio::spawn(listen_and_serve("[::]:8080", "IPv6")),
-        tokio::spawn(start_admin_server("[::1]:15080")),
+        tokio::spawn(start_admin_server("localhost:9080")),
     ];
 
     futures::future::join_all(tasks).await;
