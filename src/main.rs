@@ -3,10 +3,14 @@ use hyper::server::conn::http1;
 use hyper::{body::Bytes, service::service_fn, Request, Response};
 use hyper::{Method, StatusCode};
 use log::{error, info};
+use std::collections::HashMap;
+use std::time::Duration;
 use std::{convert::Infallible, net::SocketAddr};
 use tokio::net::TcpListener;
+use tokio::time;
 
 const BACKLOG: u8 = 128;
+// const SVC_NAME: &str = "reflect";
 
 // TODO: path routing?
 // TODO: sleep/delay path
@@ -29,8 +33,30 @@ async fn handle(
     peer: SocketAddr,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     info!("handling connection from {}", peer);
-    match req.method() {
+
+    let method = req.method();
+    let params: HashMap<String, String> = req
+        .uri()
+        .query()
+        .map(|v| {
+            url::form_urlencoded::parse(v.as_bytes())
+                .into_owned()
+                .collect()
+        })
+        .unwrap_or_else(HashMap::new);
+
+    let after_duration = params.get("after");
+
+    match method {
         &Method::GET => {
+            if let Some(dur) = after_duration {
+                let dur: Result<u64, _> = dur.parse();
+                if let Ok(dur) = dur {
+                    info!("requested repsonse after {}s", dur);
+                    time::sleep(Duration::new(dur, 0)).await;
+                }
+            }
+
             if let Ok(resp) = Response::builder().body(Full::new(Bytes::from(format!(
                 "You connected on {} port {}\nHello World!\n",
                 local.ip().to_string(),
@@ -41,39 +67,9 @@ async fn handle(
                 Ok(Response::new(Full::new(Bytes::from("Hello World!\n"))))
             }
         }
-        _ => Ok(Response::builder()
-            .status(StatusCode::METHOD_NOT_ALLOWED)
-            .body(Full::default())
-            .unwrap()),
+        _ => serve_error(StatusCode::METHOD_NOT_ALLOWED),
     }
 }
-
-// async fn build_listener<A>(addr: A) -> TcpListener
-// where
-//     A: std::net::ToSocketAddrs,
-// {
-//     let addr = std::net::ToSocketAddrs::to_socket_addrs(&addr)
-//         .unwrap()
-//         .last()
-//         .unwrap();
-
-//     let l = if addr.is_ipv6() {
-//         info!("setting up IPv6 listener");
-//         let v6 = net2::TcpBuilder::new_v6().unwrap();
-//         v6.only_v6(true)
-//             .unwrap()
-//             .bind(addr)
-//             .unwrap()
-//             .listen(BACKLOG.into())
-//             .unwrap()
-//     } else {
-//         info!("setting up IPv4 listener");
-//         let v4 = net2::TcpBuilder::new_v4().unwrap();
-//         v4.bind(addr).unwrap().listen(BACKLOG.into()).unwrap()
-//     };
-
-//     TcpListener::from_std(l).unwrap()
-// }
 
 async fn build_listener<A>(addr: A) -> TcpListener
 where
@@ -100,14 +96,15 @@ where
     TcpListener::from_std(l).unwrap()
 }
 
-async fn listen_and_serve<A>(addr: A)
-where
+async fn listen_and_serve<A>(
+    addr: A,
+    _name: &str, // likely required for metrics but stubbed out
+                 // metrics_cx: Context
+) where
     A: std::net::ToSocketAddrs,
 {
-    // let addr = std::net::ToSocketAddrs::to_socket_addrs(&addr)
-    //     .unwrap()
-    //     .last()
-    //     .unwrap();
+    // let meter = global::meter(SVC_NAME);
+    // let counter = meter.u64_observable_counter(name).init();
 
     let l = build_listener(addr).await;
 
@@ -117,24 +114,14 @@ where
         let peer = stream.peer_addr().unwrap();
         info!("connection is from {}", peer);
 
-        // let stream = TcpStream::from_std(stream).unwrap();
-
-        // if let Err(err) = http1::Builder::new()
-        //     .serve_connection(stream, service_fn(move |r| self::handle(r, local, peer)))
-        //     .await
-        // {
-        //     error!("Error serving connection: {:?}", err);
-        // }
-
-        // runtime.spawn(async move {
-        //     info!("spawning a new task");
-        //     if let Err(err) = http1::Builder::new()
-        //         .serve_connection(stream, service_fn(move |r| self::handle(r, local, peer)))
-        //         .await
-        //     {
-        //         error!("Error serving connection: {:?}", err);
-        //     }
-        // });
+        // counter.observe(
+        //     &metrics_cx,
+        //     1,
+        //     &[
+        //         KeyValue::new("client_socket", peer.to_string()),
+        //         KeyValue::new("local_socket", local.to_string()),
+        //     ],
+        // );
 
         tokio::spawn(async move {
             info!("spawning a new task");
@@ -144,6 +131,7 @@ where
             {
                 error!("Error serving connection: {:?}", err);
             }
+            info!("task complete");
         });
     }
 
@@ -166,21 +154,114 @@ where
     // }
 }
 
+fn serve_metrics(// metrics: Vec<prometheus::proto::MetricFamily>,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    // let encoder = TextEncoder::new();
+    // let mut result = Vec::new();
+    // if let Err(e) = encoder.encode(&metrics, &mut result) {
+    //     error!("admin server encountered error decoding metrics {}", e);
+    //     return serve_error(StatusCode::INTERNAL_SERVER_ERROR);
+    // }
+    // let body = Full::from(result);
+    let body = Full::from("metrics aren't implemented yet :(\n");
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .body(body)
+        .unwrap())
+}
+
+fn serve_error(code: StatusCode) -> Result<Response<Full<Bytes>>, Infallible> {
+    Ok(Response::builder()
+        .status(code)
+        .body(Full::default())
+        .unwrap())
+}
+
+async fn handle_admin(
+    r: Request<hyper::body::Incoming>,
+    // m: Vec<prometheus::proto::MetricFamily>,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let method = r.method().to_owned();
+    let path = r.uri().path();
+    match (method, path) {
+        (Method::GET, "/metrics") => {
+            // handle metrics here
+            serve_metrics()
+        }
+        _ => {
+            // return error
+            serve_error(StatusCode::NOT_FOUND)
+        }
+    }
+}
+
+async fn start_admin_server<A>(addr: A)
+where
+    A: tokio::net::ToSocketAddrs,
+{
+    // let exporter = init_prom_exporter();
+    let l = TcpListener::bind(addr).await.unwrap();
+    loop {
+        let (stream, _) = l.accept().await.unwrap();
+        // let metrics = exporter.registry().gather();
+        tokio::spawn(async move {
+            info!("spawning a new admin server task");
+            if let Err(err) = http1::Builder::new()
+                .serve_connection(stream, service_fn(move |r| self::handle_admin(r)))
+                .await
+            {
+                error!("Error serving connection: {:?}", err);
+            }
+            info!("admin server task complete");
+        });
+    }
+}
+
+// fn init_meter_provider() {
+//     let exporter = init_prom_exporter();
+
+//     let gp = global::GlobalMeterProvider::new(exporter.meter_provider().unwrap());
+
+//     // let reader = PeriodicReader::builder(exporter, runtime::Tokio).build();
+//     // let p = MeterProvider::builder()
+//     //     .with_reader(reader)
+//     //     // .with_resource(Resource::new(vec![KeyValue::new(
+//     //     //     "service.name",
+//     //     //     "metrics-basic-example",
+//     //     // )]))
+//     //     .build();
+
+//     global::set_meter_provider(gp);
+// }
+
+// fn init_prom_exporter() -> PrometheusExporter {
+//     let controller = controllers::basic(processors::factory(
+//         selectors::simple::inexpensive(), // maybe use histogram([1.0, 2.0, 5.0, 10.0, 20.0, 50.0]) instead if we need hist
+//         aggregation::cumulative_temporality_selector(),
+//     ))
+//     .build();
+
+//     opentelemetry_prometheus::exporter(controller).init()
+// }
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
+    // let metrics_cx = Context::current();
+    // init_meter_provider();
 
-    tokio::spawn(listen_and_serve("0.0.0.0:8080"));
-    tokio::spawn(listen_and_serve("[::]:8080"));
+    // tokio::spawn(listen_and_serve("0.0.0.0:8080"));
+    // tokio::spawn(listen_and_serve("[::]:8080"));
 
-    loop {}
+    // loop {}
 
-    // let tasks = vec![
-    //     tokio::spawn(listen_and_serve("0.0.0.0:8080")),
-    //     tokio::spawn(listen_and_serve("[::]:8080")),
-    // ];
+    let tasks = vec![
+        tokio::spawn(listen_and_serve("0.0.0.0:8080", "IPv4")),
+        tokio::spawn(listen_and_serve("[::]:8080", "IPv6")),
+        tokio::spawn(start_admin_server("[::1]:15080")),
+    ];
 
-    // futures::future::join_all(tasks).await;
+    futures::future::join_all(tasks).await;
 
     // make sure to bind IPv4 first, on mac at least there is a tcp46 which takes over the tcp4 if bound first
     // let listenerv4 = TcpListener::bind("0.0.0.0:8080").await.unwrap();
